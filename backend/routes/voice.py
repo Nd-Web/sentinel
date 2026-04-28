@@ -164,7 +164,7 @@ async def analyse_voice(
                     {"role": "user", "content": f"Transcript:\n{transcript}"}
                 ],
                 temperature=0.3,
-                max_tokens=500,
+                max_completion_tokens=500,
                 response_format={"type": "json_object"}
             )
 
