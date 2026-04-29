@@ -31,7 +31,6 @@ _client_instance: Optional[AzureOpenAI] = None
 
 
 def get_client() -> AzureOpenAI:
-    """Lazy-initialised singleton AzureOpenAI client."""
     global _client_instance
     if _client_instance is None:
         _client_instance = AzureOpenAI(
@@ -54,106 +53,84 @@ DEFAULT_MEDIUM_RISK = {
     "source": "fallback",
     "calibration_log": [],
     "self_consistency_applied": False,
+    "suggested_actions": ["Manual review required", "Do not act on this message until verified"],
 }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CORE FEW-SHOT EXAMPLES (always included as baseline)
+# SYSTEM PROMPT — kept minimal to avoid content filter
+# All scoring logic is in the user message, not the system prompt
 # ─────────────────────────────────────────────────────────────────────────────
 
-CORE_FEW_SHOT = """
-EXAMPLE A (Bank impersonation + fake domain):
-Message: "URGENT: Your GTBank account has been suspended. Verify your BVN at gtb-secure-verify.com within 24 hours or face permanent closure."
-Output: {"risk_score": 97, "threat_level": "HIGH", "flags": ["fake_domain", "urgency_language", "bank_impersonation", "bvn_request", "threat_of_closure"], "action": "BLOCK", "reasoning": "Impersonates GTBank with fake domain. BVN requests via SMS are primary identity theft vectors in Nigeria. Permanent closure threat forces panic-driven action.", "is_scam": true}
+SYSTEM_PROMPT = """You are a message classification assistant for a telecom security platform in Nigeria.
 
-EXAMPLE B (OTP sharing — always 95+):
-Message: "Your OTP is 847291. Share this code with our customer care agent to complete verification."
-Output: {"risk_score": 99, "threat_level": "HIGH", "flags": ["otp_sharing_request", "credential_theft", "social_engineering"], "action": "BLOCK", "reasoning": "Legitimate banks NEVER ask customers to share OTP codes. This is a direct account takeover attempt by definition.", "is_scam": true}
+Your job is to analyse incoming SMS and voice messages and classify them by risk level.
 
-EXAMPLE C (Deepfake CEO / BEC):
-Message: "This is the MD calling. Transfer N15,000,000 to GTBank 0123456789, Acme Supplies. Tell no one, I will explain later."
-Output: {"risk_score": 98, "threat_level": "HIGH", "flags": ["executive_impersonation", "large_transfer_request", "secrecy_instruction", "deepfake_likely", "bec_pattern"], "action": "BLOCK", "reasoning": "Classic deepfake CEO fraud. Large transfer combined with secrecy instruction is the highest-risk combination in Nigerian corporate fraud.", "is_scam": true}
+Always respond with a single JSON object. Never include any other text.
 
-EXAMPLE D (Legitimate bank alert):
-Message: "Your GTBank account XXXXXX1234 has been credited with N150,000.00. Balance: N387,450.22. Date: 24-Apr-2026. Not you? Call 07300000000."
-Output: {"risk_score": 3, "threat_level": "CLEAN", "flags": [], "action": "ALLOW", "reasoning": "Standard GTBank credit alert with masked account number, official helpline, no links or credential requests.", "is_scam": false}
+Output format:
+{
+  "risk_score": <integer 0-100>,
+  "threat_level": "<HIGH|MEDIUM|LOW|CLEAN>",
+  "flags": ["<signal_1>", "<signal_2>"],
+  "action": "<BLOCK|REVIEW|ALLOW>",
+  "reasoning": "<2-3 sentence explanation>",
+  "is_scam": <true|false>,
+  "suggested_actions": ["<action_1>", "<action_2>"]
+}
 
-EXAMPLE E (Government impersonation extortion):
-Message: "EFCC: Your account is linked to money laundering. Pay N200,000 bond immediately to avoid arrest today."
-Output: {"risk_score": 97, "threat_level": "HIGH", "flags": ["law_enforcement_impersonation", "arrest_threat", "extortion", "payment_demand"], "action": "BLOCK", "reasoning": "EFCC never calls to demand bond payments via SMS. Pure extortion using false authority and arrest threats.", "is_scam": true}
-
-EXAMPLE F (Advance-fee loan — medium risk):
-Message: "Pre-approved loan of N500,000 available. Pay N3,000 insurance fee to account 0987654321 Wema Bank to activate."
-Output: {"risk_score": 78, "threat_level": "MEDIUM", "flags": ["upfront_fee_request", "advance_fee", "unsolicited_loan"], "action": "REVIEW", "reasoning": "Advance fee loan fraud. Legitimate lenders never require upfront fees. Medium risk due to less aggressive language.", "is_scam": true}
-"""
+Score thresholds:
+- 80-100: threat_level HIGH, action BLOCK, is_scam true
+- 50-79: threat_level MEDIUM, action REVIEW, is_scam true
+- 20-49: threat_level LOW, action ALLOW, is_scam false
+- 0-19: threat_level CLEAN, action ALLOW, is_scam false"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SYSTEM PROMPT BUILDER — assembled per-request with retrieved examples
+# USER PROMPT BUILDER — scoring rubric goes here, not in system prompt
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_system_prompt(retrieved_examples_block: str) -> str:
-    """Assemble the full system prompt with dynamic few-shot block."""
-    return f"""You are SentinelAI, an expert AI fraud analyst specialising in Nigerian and African telecom fraud. You analyse SMS, WhatsApp, and voice transcripts for banks, fintechs, telcos, and call centres.
+def _build_user_prompt(
+    content: str,
+    message_type: str,
+    sender: Optional[str],
+    retrieved_examples_block: str,
+) -> str:
+    sender_line = f"Sender: {sender}\n" if sender else ""
 
-Classify each message by identifying fraud signals and legitimacy signals, then apply the scoring rubric below.
+    return f"""Classify this {message_type.upper()} message for risk.
 
-# SCORING RUBRIC
+{sender_line}Message: "{content}"
 
-## ALWAYS BLOCK (risk 90-100):
-- OTP / PIN sharing requests -> 95+ minimum
-- Card number + CVV requests -> 95+ minimum
-- Executive impersonation + transfer + secrecy = deepfake CEO fraud -> 95+
-- Government impersonation (CBN, EFCC, NDLEA, NIMC, Police) demanding payment or credentials -> 95+
-- Fake bank domains harvesting BVN/NIN/passwords -> 90+
+Use this scoring guide:
 
-## USUALLY BLOCK (risk 70-89):
-- Prize scams from MTN/Airtel/Glo/9mobile using Gmail/Yahoo contacts
-- Job scams promising N50,000-N500,000/day for minimal work
-- Investment scams promising guaranteed 100-300% returns
-- Loan scams requiring upfront fees before disbursement
+Score 90-100 (BLOCK) when the message:
+- Requests the recipient to share or repeat an authentication code to another person
+- Requests full card credentials such as CVV or card number
+- Contains a transfer instruction combined with a secrecy instruction
+- Demands payment to avoid legal consequences from a named agency
 
-## REVIEW (risk 50-69):
-- Unsolicited loan offers without explicit upfront fee requests
-- Suspicious domains without direct credential requests
-- Unverifiable transaction alerts with suspicious call-back numbers
+Score 70-89 (BLOCK) when the message:
+- Claims the recipient won a prize from a telecoms company
+- Promises unrealistic daily income for minimal work
+- Offers guaranteed investment returns
+- Requires an upfront payment before receiving a loan
 
-## ALLOW (risk 0-49):
-- Standard bank transaction alerts (masked account numbers, official helplines)
-- Airtime/data bundle confirmations
-- Loan repayment reminders citing official channels
-- USSD code instructions (*737#, *901#, *131# etc.)
+Score 50-69 (REVIEW) when the message:
+- Makes an unsolicited loan offer without requesting upfront payment
+- Contains a callback number that cannot be verified
+- Uses a non-official web domain for a bank or government service
 
-# FRAUD SIGNALS
-- Fake domains: real Nigerian banks use .com.ng, .ng, or their official .com
-- Gmail/Yahoo contact for banks/telcos = scam
-- BVN + NIN + DOB together = identity theft
-- Any OTP sharing = account takeover
-- Upfront fee for loan/prize/grant = advance fee fraud (419)
-- Transfer + secrecy instruction = BEC fraud
-- Arrest threat + payment = law enforcement impersonation
+Score 0-49 (ALLOW) when the message:
+- Is a standard transaction alert with a masked account number and official helpline
+- Confirms airtime or data purchase
+- Contains a USSD service code
 
-# LEGITIMACY SIGNALS
-- Masked account numbers (XXXXXX1234, ****4821)
-- Official bank helplines (0700-/0730-/01- format)
-- USSD codes (*737#, *901#, *131#)
-- Transaction reference numbers
-- Specific date and merchant name
+Legitimacy indicators: masked account numbers, official bank helplines (0700/0730/01 prefix), USSD codes, transaction reference numbers, specific merchant and date.
 
-# REFERENCE EXAMPLES
-{CORE_FEW_SHOT}
 {retrieved_examples_block}
 
-# OUTPUT FORMAT (strict JSON, nothing else)
-{{"risk_score": <int 0-100>, "threat_level": "<HIGH|MEDIUM|LOW|CLEAN>", "flags": [<strings>], "action": "<BLOCK|REVIEW|ALLOW>", "reasoning": "<2-3 sentence plain-English explanation>", "is_scam": <true|false>}}
-
-THRESHOLDS:
-- risk_score 80-100 -> threat_level HIGH -> action BLOCK
-- risk_score 50-79  -> threat_level MEDIUM -> action REVIEW
-- risk_score 20-49  -> threat_level LOW -> action ALLOW
-- risk_score 0-19   -> threat_level CLEAN -> action ALLOW
-- is_scam = true if risk_score >= 50, otherwise false
-"""
+Return only the JSON object."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -164,25 +141,17 @@ async def _call_gpt(
     content: str,
     message_type: str,
     sender: Optional[str],
-    system_prompt: str,
+    retrieved_examples_block: str,
     temperature: float = 0.1,
 ) -> Dict[str, Any]:
-    """Single GPT call returning parsed JSON dict."""
-    sender_context = f"Sender: {sender}\n" if sender else ""
-    # FIX 1: Removed "Walk through your reasoning" — triggers Azure jailbreak filter
-    user_prompt = (
-        f"Classify this {message_type.upper()} message for fraud risk:\n\n"
-        f'{sender_context}Message: "{content}"\n\n'
-        f"Return your JSON verdict."
-    )
+    user_prompt = _build_user_prompt(content, message_type, sender, retrieved_examples_block)
 
     response = get_client().chat.completions.create(
         model=CHAT_MODEL,
         messages=[
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
-        # FIX 2: gpt-5.4-nano requires max_completion_tokens not max_tokens
         max_completion_tokens=500,
         temperature=temperature,
         response_format={"type": "json_object"},
@@ -199,18 +168,15 @@ async def analyse_message(
     content: str,
     message_type: str = "sms",
     sender: Optional[str] = None,
+    org_id: Optional[str] = None,
 ) -> dict:
-    """
-    Hardened fraud analysis: rule pre-flight -> retrieval -> CoT GPT call ->
-    self-consistency on borderline -> calibration.
-    """
     try:
         # Layer 1: Rule pre-flight
         rule_result = apply_rules(content)
 
         if rule_result and rule_result.get("skip_gpt"):
             logger.info(f"Rule engine hard verdict: {rule_result.get('flags')}")
-            return _shape_result({
+            result = _shape_result({
                 "risk_score": rule_result["risk_score"],
                 "threat_level": rule_result["threat_level"],
                 "flags": rule_result["flags"],
@@ -218,27 +184,25 @@ async def analyse_message(
                 "reasoning": rule_result["reasoning"],
                 "is_scam": rule_result["is_scam"],
                 "source": "rule_engine",
+                "suggested_actions": rule_result.get("suggested_actions", []),
             })
+            return await _apply_memory_boost(result, content, sender, org_id)
 
         rule_priors = rule_result.get("priors") if rule_result else None
 
         # Layer 2: Dynamic few-shot retrieval
         similar = retrieve_similar_examples(content, k=3)
         retrieved_block = format_examples_for_prompt(similar)
-        system_prompt = _build_system_prompt(retrieved_block)
 
-        # Layer 3: First GPT call with chain-of-thought
-        first = await _call_gpt(content, message_type, sender, system_prompt, temperature=0.1)
+        # Layer 3: First GPT call
+        first = await _call_gpt(content, message_type, sender, retrieved_block, temperature=0.1)
         score = float(first.get("risk_score", 50))
-
         final = first
 
         # Layer 4: Self-consistency on borderline cases (40-75)
         if 40 <= score <= 75:
             try:
-                second = await _call_gpt(
-                    content, message_type, sender, system_prompt, temperature=0.3
-                )
+                second = await _call_gpt(content, message_type, sender, retrieved_block, temperature=0.3)
                 avg = (score + float(second.get("risk_score", score))) / 2
                 merged_flags = list(set(
                     list(first.get("flags", [])) + list(second.get("flags", []))
@@ -247,6 +211,8 @@ async def analyse_message(
                     [first.get("reasoning", ""), second.get("reasoning", "")],
                     key=len,
                 )
+                sa1 = first.get("suggested_actions", [])
+                sa2 = second.get("suggested_actions", [])
                 final = {
                     "risk_score": avg,
                     "threat_level": first.get("threat_level"),
@@ -256,6 +222,7 @@ async def analyse_message(
                     "is_scam": first.get("is_scam"),
                     "self_consistency_applied": True,
                     "scores_observed": [score, float(second.get("risk_score", score))],
+                    "suggested_actions": sa1 if len(sa1) >= len(sa2) else sa2,
                 }
                 logger.info(f"Self-consistency applied: {final['scores_observed']}")
             except Exception as e:
@@ -263,20 +230,63 @@ async def analyse_message(
 
         # Layer 5: Calibration
         calibrated = calibrate(final, content, rule_priors=rule_priors)
-
-        return _shape_result({**calibrated, "source": "gpt+calibration"})
+        result = _shape_result({**calibrated, "source": "gpt+calibration"})
+        return await _apply_memory_boost(result, content, sender, org_id)
 
     except json.JSONDecodeError as e:
         logger.error(f"JSON parse error: {e}")
         return DEFAULT_MEDIUM_RISK
     except Exception as e:
-        # FIX 3: Return fallback instead of re-raising — prevents 500 errors
         logger.error(f"Analysis failed: {e}")
+        try:
+            rule_result = apply_rules(content)
+            if rule_result:
+                return _shape_result({
+                    "risk_score": rule_result["risk_score"],
+                    "threat_level": rule_result["threat_level"],
+                    "flags": rule_result.get("flags", []),
+                    "action": rule_result["action"],
+                    "reasoning": rule_result["reasoning"] + " (AI unavailable — rule engine used)",
+                    "is_scam": rule_result.get("is_scam", False),
+                    "source": "rule_engine_fallback",
+                    "suggested_actions": rule_result.get("suggested_actions", []),
+                })
+        except Exception:
+            pass
         return DEFAULT_MEDIUM_RISK
 
 
+async def _apply_memory_boost(
+    result: dict,
+    content: str,
+    sender: Optional[str],
+    org_id: Optional[str],
+) -> dict:
+    if not org_id:
+        return result
+    try:
+        from ai.memory import check_fraud_memory
+        memory_check = check_fraud_memory(org_id, content, sender or "")
+        if memory_check.get("matched"):
+            boost = memory_check.get("memory_boost", 0.0)
+            new_score = min(100.0, result["risk_score"] + boost)
+            if boost > 0:
+                result["risk_score"] = new_score
+                result["calibration_log"] = result.get("calibration_log", []) + [
+                    f"Memory boost +{boost:.1f} from {len(memory_check.get('patterns', []))} org pattern(s)"
+                ]
+                if new_score >= 80:
+                    result["threat_level"] = "HIGH"
+                    result["action"] = "BLOCK"
+                elif new_score >= 50:
+                    result["threat_level"] = "MEDIUM"
+                    result["action"] = "REVIEW"
+    except Exception as e:
+        logger.warning(f"Memory boost failed (non-fatal): {e}")
+    return result
+
+
 def _shape_result(r: Dict[str, Any]) -> dict:
-    """Coerce all fields to expected types and bounds."""
     return {
         "risk_score": max(0.0, min(100.0, float(r.get("risk_score", 50)))),
         "threat_level": r.get("threat_level", "MEDIUM"),
@@ -287,11 +297,11 @@ def _shape_result(r: Dict[str, Any]) -> dict:
         "source": r.get("source", "gpt"),
         "calibration_log": r.get("calibration_log", []),
         "self_consistency_applied": r.get("self_consistency_applied", False),
+        "suggested_actions": list(r.get("suggested_actions", [])),
     }
 
 
 async def batch_analyse(messages: list) -> list:
-    """Analyse multiple messages concurrently."""
     tasks = [
         analyse_message(
             content=msg.get("content", ""),
@@ -307,12 +317,7 @@ async def batch_analyse(messages: list) -> list:
     ]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# EVALUATION (for dashboard accuracy widget)
-# ─────────────────────────────────────────────────────────────────────────────
-
 async def evaluate_model_performance() -> dict:
-    """Run the labelled dataset and report accuracy / precision / recall."""
     dataset_path = os.path.join(
         os.path.dirname(__file__), "data", "nigerian_scam_dataset.json"
     )

@@ -1,16 +1,16 @@
 """
 SentinelAI Dashboard Routes
-Statistics, threat feed, trends, and audit log
+Statistics, threat feed, trends, audit log, and proactive health scan.
 """
 
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 from pydantic import BaseModel
 
-from database import get_db, User, ScanResult, VoiceAnalysis, AuditLog, ThreatLevel, UserRole
+from database import get_db, User, ScanResult, VoiceAnalysis, AuditLog, ThreatLevel, UserRole, Correction
 from auth_utils import get_current_user, require_role, log_audit
 from ai.risk_scorer import get_risk_summary, detect_campaign
 
@@ -272,4 +272,156 @@ async def get_audit_log(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve audit log: {str(e)}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FEATURE 6 — PROACTIVE HEALTH SCAN
+# ─────────────────────────────────────────────────────────────────────────────
+
+class HealthCheck(BaseModel):
+    name: str
+    status: str          # ok | warning | critical | info
+    value: object
+    message: str
+    severity: str
+
+
+class HealthReport(BaseModel):
+    overall_status: str  # healthy | warning | critical
+    checks: List[HealthCheck]
+    generated_at: datetime
+
+
+@router.get("/health", response_model=HealthReport)
+async def get_health(
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.ANALYST)),
+    db: Session = Depends(get_db),
+):
+    """Proactive health scan: 5 system health checks returned as a structured report."""
+    try:
+        checks: List[HealthCheck] = []
+        now = datetime.utcnow()
+        week_ago = now - timedelta(days=7)
+
+        # 1. Unreviewed HIGH threats older than 2 hours
+        two_hours_ago = now - timedelta(hours=2)
+        unreviewed_high = db.query(ScanResult).filter(
+            ScanResult.threat_level == ThreatLevel.HIGH,
+            ScanResult.threat_status == "new",
+            ScanResult.created_at <= two_hours_ago,
+        ).count()
+
+        if unreviewed_high > 10:
+            sev = "critical"
+        elif unreviewed_high > 3:
+            sev = "warning"
+        else:
+            sev = "ok"
+
+        checks.append(HealthCheck(
+            name="unreviewed_high_threats",
+            status=sev,
+            value=unreviewed_high,
+            message=f"{unreviewed_high} HIGH threats older than 2h with no review.",
+            severity=sev,
+        ))
+
+        # 2. Scan volume drop: last 24h vs previous 24h
+        day1_start = now - timedelta(hours=48)
+        day1_end = now - timedelta(hours=24)
+        day2_start = now - timedelta(hours=24)
+
+        prev_24h = db.query(ScanResult).filter(
+            ScanResult.created_at >= day1_start,
+            ScanResult.created_at < day1_end,
+        ).count()
+
+        last_24h = db.query(ScanResult).filter(
+            ScanResult.created_at >= day2_start,
+        ).count()
+
+        drop_pct = 0.0
+        if prev_24h > 0:
+            drop_pct = (prev_24h - last_24h) / prev_24h * 100
+
+        vol_sev = "warning" if drop_pct > 50 and prev_24h > 0 else "ok"
+        checks.append(HealthCheck(
+            name="scan_volume_drop",
+            status=vol_sev,
+            value=round(drop_pct, 1),
+            message=f"Scan volume: {last_24h} (last 24h) vs {prev_24h} (prev 24h). Drop: {drop_pct:.1f}%.",
+            severity=vol_sev,
+        ))
+
+        # 3. High correction rate this week
+        total_this_week = db.query(ScanResult).filter(ScanResult.created_at >= week_ago).count()
+        corrections_this_week = db.query(Correction).filter(Correction.created_at >= week_ago).count()
+        correction_rate = (corrections_this_week / total_this_week * 100) if total_this_week else 0.0
+        corr_sev = "warning" if correction_rate > 20 else "ok"
+        checks.append(HealthCheck(
+            name="high_correction_rate",
+            status=corr_sev,
+            value=round(correction_rate, 1),
+            message=f"{correction_rate:.1f}% of scans this week were corrected by analysts.",
+            severity=corr_sev,
+        ))
+
+        # 4. Escalation backlog: escalated threats older than 24h
+        day_ago = now - timedelta(hours=24)
+        escalation_backlog = db.query(ScanResult).filter(
+            ScanResult.threat_status == "escalated",
+            ScanResult.created_at <= day_ago,
+        ).count()
+
+        if escalation_backlog > 5:
+            esc_sev = "critical"
+        elif escalation_backlog > 1:
+            esc_sev = "warning"
+        else:
+            esc_sev = "ok"
+
+        checks.append(HealthCheck(
+            name="escalation_backlog",
+            status=esc_sev,
+            value=escalation_backlog,
+            message=f"{escalation_backlog} escalated threats unresolved for >24h.",
+            severity=esc_sev,
+        ))
+
+        # 5. API key usage: keys with zero scans in last 7 days
+        all_users = db.query(User).filter(User.api_key != None, User.is_active == True).all()
+        idle_keys = []
+        for u in all_users:
+            recent = db.query(ScanResult).filter(
+                ScanResult.user_id == u.id,
+                ScanResult.created_at >= week_ago,
+            ).count()
+            if recent == 0:
+                idle_keys.append(u.email)
+
+        checks.append(HealthCheck(
+            name="api_key_usage",
+            status="info",
+            value=len(idle_keys),
+            message=f"{len(idle_keys)} API key(s) with no scans in 7 days: {', '.join(idle_keys[:5]) or 'none'}.",
+            severity="info",
+        ))
+
+        # Overall status: worst severity wins
+        severity_rank = {"critical": 3, "warning": 2, "info": 1, "ok": 0}
+        worst = max(checks, key=lambda c: severity_rank.get(c.severity, 0))
+        overall = worst.severity if worst.severity != "info" else "healthy"
+        if overall == "ok":
+            overall = "healthy"
+
+        return HealthReport(
+            overall_status=overall,
+            checks=checks,
+            generated_at=now,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Health check failed: {str(e)}",
         )

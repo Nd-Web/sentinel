@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     create_engine, Column, String, Integer, Float, Boolean, DateTime,
-    ForeignKey, Text, JSON, Enum as SQLEnum, Index
+    ForeignKey, Text, JSON, Enum as SQLEnum, Index, text
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from sqlalchemy.dialects.sqlite import CHAR
@@ -315,7 +315,7 @@ def get_db():
 
 def _column_exists(conn, table: str, column: str) -> bool:
     """Check whether a column exists in a SQLite table via PRAGMA."""
-    result = conn.execute(f"PRAGMA table_info({table})")
+    result = conn.execute(text(f"PRAGMA table_info({table})"))
     return any(row[1] == column for row in result)
 
 
@@ -331,5 +331,5 @@ def init_db():
         ]
         for table, col, definition in migrations:
             if not _column_exists(conn, table, col):
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {definition}"))
         conn.commit()

@@ -12,18 +12,28 @@ import {
   ChevronDown,
   LogOut,
   Menu,
+  Sparkles,
 } from 'lucide-react'
 import { useAuthStore } from '@/store/auth.store'
 import { DASHBOARD_ROUTES } from './constants'
+import type { UserRole } from '@/features/auth/types'
 
-const navItems = [
+interface NavItem {
+  label: string
+  icon: React.ComponentType<{ className?: string }>
+  to: string
+  end?: boolean
+  allowedRoles?: UserRole[]
+}
+
+const navItems: NavItem[] = [
   { label: 'Dashboard', icon: LayoutDashboard, to: DASHBOARD_ROUTES.ROOT, end: true },
   { label: 'Threats', icon: ShieldAlert, to: DASHBOARD_ROUTES.THREATS },
   { label: 'Deepfake Detection', icon: ScanFace, to: DASHBOARD_ROUTES.DEEPFAKE },
-  { label: 'User Management', icon: Users, to: DASHBOARD_ROUTES.USER_MANAGEMENT },
+  { label: 'User Management', icon: Users, to: DASHBOARD_ROUTES.USER_MANAGEMENT, allowedRoles: ['admin'] },
 ]
 
-const settingsItems = [
+const settingsItems: NavItem[] = [
   { label: 'Profile', icon: User, to: DASHBOARD_ROUTES.SETTINGS_PROFILE },
   { label: 'API Keys', icon: Key, to: DASHBOARD_ROUTES.SETTINGS_API_KEYS },
 ]
@@ -55,8 +65,21 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
     navigate('/sign-in')
   }
 
-  const initials = user ? `${user.firstName[0]}${user.lastName[0]}` : '?'
-  const fullName = user ? `${user.firstName} ${user.lastName}` : 'User'
+  const visibleNavItems = navItems.filter(
+    (item) => !item.allowedRoles || (user && item.allowedRoles.includes(user.role)),
+  )
+
+  const initials = user
+    ? user.firstName && user.lastName
+      ? `${user.firstName[0]}${user.lastName[0]}`.toUpperCase()
+      : (user.email || '?').slice(0, 2).toUpperCase()
+    : '?'
+
+  const displayName = user
+    ? user.firstName || user.lastName
+      ? `${user.firstName} ${user.lastName}`.trim()
+      : user.full_name || user.email
+    : 'User'
 
   return (
     <aside className="w-60 bg-slate-900 border-r border-slate-800 flex flex-col h-full">
@@ -81,7 +104,7 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
 
       {/* Navigation */}
       <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
-        {navItems.map((item) => (
+        {visibleNavItems.map((item) => (
           <NavLink key={item.to} to={item.to} end={item.end} className={navLinkClass} onClick={onClose}>
             <item.icon className="size-4 shrink-0" />
             {item.label}
@@ -116,6 +139,24 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
             </div>
           )}
         </div>
+
+        {/* Quick Start Wizard */}
+        <div className="pt-2 mt-2 border-t border-slate-800">
+          <NavLink
+            to="/onboarding"
+            className={({ isActive }) =>
+              `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                isActive
+                  ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20'
+                  : 'text-slate-500 hover:text-slate-200 hover:bg-slate-800/60'
+              }`
+            }
+            onClick={onClose}
+          >
+            <Sparkles className="size-4 shrink-0" />
+            Quick Start Wizard
+          </NavLink>
+        </div>
       </nav>
 
       {/* User card */}
@@ -125,7 +166,7 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
             {initials}
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-xs font-medium text-slate-300 truncate">{fullName}</div>
+            <div className="text-xs font-medium text-slate-300 truncate">{displayName}</div>
             <div className="text-[11px] text-slate-600 truncate">{user?.email}</div>
           </div>
           <button

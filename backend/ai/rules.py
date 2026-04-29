@@ -25,7 +25,9 @@ CRITICAL_PATTERNS: List[Dict[str, Any]] = [
             r"\b(otp|one[\s\-]?time[\s\-]?password|verification[\s\-]?code"
             r"|auth[\s\-]?code|authentication[\s\-]?code|security[\s\-]?code"
             r"|this[\s\-]?code|the[\s\-]?code|pin|transaction[\s\-]?pin"
-            r"|6[\s\-]?digit[\s\-]?code|4[\s\-]?digit[\s\-]?code)\b", re.IGNORECASE),
+            r"|6[\s\-]?digit[\s\-]?code|4[\s\-]?digit[\s\-]?code"
+            r"|token|auth[\s\-]?token|access[\s\-]?token|the[\s\-]?token|this[\s\-]?token)\b",
+            re.IGNORECASE),
         "score": 99,
         "reason": "Direct request to share OTP/PIN — definitionally account takeover. "
                   "No legitimate bank or service ever asks customers to share OTP codes.",
@@ -316,6 +318,7 @@ def apply_rules(content: str) -> Optional[Dict[str, Any]]:
             "scam_category": category,
             "source": "rule_engine",
             "skip_gpt": True,
+            "suggested_actions": _suggested_actions_for_category(category),
         }
 
     # Step 6: Legit whitelist (only if NO suspicious signals)
@@ -334,6 +337,7 @@ def apply_rules(content: str) -> Optional[Dict[str, Any]]:
                     "scam_category": "none",
                     "source": "rule_engine",
                     "skip_gpt": True,
+                    "suggested_actions": ["No action required", "File for records"],
                 }
 
     # Step 7: Partial match — pass priors to GPT
@@ -352,3 +356,81 @@ def apply_rules(content: str) -> Optional[Dict[str, Any]]:
         }
 
     return None
+
+
+def _suggested_actions_for_category(category: str) -> List[str]:
+    """Return context-specific suggested actions for a fraud category."""
+    mapping = {
+        "otp_theft": [
+            "Immediately block the sender number",
+            "Alert account holder via official channel",
+            "Invalidate all active OTP sessions",
+            "File incident report with CBN",
+        ],
+        "card_theft": [
+            "Block the customer's card immediately",
+            "Alert customer via registered phone/email",
+            "Initiate card replacement procedure",
+            "Log incident with fraud operations team",
+        ],
+        "bec_deepfake": [
+            "Do NOT process the transfer",
+            "Verify with executive via known phone number",
+            "Alert IT security team",
+            "Preserve voice recording as evidence",
+        ],
+        "government_impersonation": [
+            "Do not pay any amount",
+            "Report to actual EFCC via efcc.gov.ng",
+            "Alert other staff",
+            "Document the contact details",
+        ],
+        "identity_theft": [
+            "Do not share BVN or NIN with anyone",
+            "Contact your bank's fraud hotline",
+            "Report to NIMC if NIN was compromised",
+            "Monitor account for unauthorized activity",
+        ],
+        "investment_scam": [
+            "Do not invest any funds",
+            "Report platform to SEC Nigeria",
+            "Block sender and add to org blacklist",
+            "Warn colleagues about the scheme",
+        ],
+        "advance_fee_fraud": [
+            "Do not pay any advance fee",
+            "Report to EFCC via efcc.gov.ng",
+            "Block sender number",
+            "Alert financial crime compliance team",
+        ],
+        "loan_scam": [
+            "Do not pay any upfront fee",
+            "Verify lender license with CBN",
+            "Block sender and add to org blacklist",
+            "Warn affected customer",
+        ],
+        "prize_scam": [
+            "Block sender",
+            "Add to org blacklist",
+            "Warn affected customer",
+            "Report to telco's anti-fraud team",
+        ],
+        "job_scam": [
+            "Do not provide bank account details",
+            "Block sender",
+            "Report to EFCC as money-mule recruitment",
+            "Warn HR department",
+        ],
+        "phishing": [
+            "Do not click any links in the message",
+            "Report phishing URL to NITDA",
+            "Block sender number",
+            "Alert IT security team immediately",
+        ],
+    }
+    return mapping.get(category, [
+        "Block the sender number",
+        "Escalate to fraud operations team",
+        "Document and preserve the message",
+        "File incident report",
+    ])
