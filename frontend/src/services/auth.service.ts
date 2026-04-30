@@ -1,22 +1,12 @@
 import { http } from '@/lib/http'
-import type { AuthResponse, AuthUser, SignInPayload, SignUpPayload, UserRole } from '@/features/auth/types'
-
-interface ApiUserData {
-  id: string
-  email: string
-  full_name: string
-  organisation: string
-  role: UserRole
-  is_active: boolean
-  created_at?: string
-  last_login?: string
-}
-
-interface ApiAuthResponse {
-  access_token: string
-  token_type: string
-  user: ApiUserData
-}
+import type {
+  AuthResponse,
+  AuthUser,
+  BackendAuthResponse,
+  BackendUser,
+  SignInPayload,
+  SignUpPayload,
+} from '@/features/auth/types'
 
 export interface ApiKeyResponse {
   message: string
@@ -24,45 +14,59 @@ export interface ApiKeyResponse {
   warning: string
 }
 
-function mapApiUser(u: ApiUserData): AuthUser {
-  const spaceIdx = u.full_name?.indexOf(' ') ?? -1
-  const firstName = spaceIdx === -1 ? (u.full_name ?? '') : u.full_name.slice(0, spaceIdx)
-  const lastName = spaceIdx === -1 ? '' : u.full_name.slice(spaceIdx + 1)
+function splitFullName(full: string | null | undefined): { firstName: string; lastName: string } {
+  if (!full) return { firstName: '', lastName: '' }
+  const trimmed = full.trim()
+  if (!trimmed) return { firstName: '', lastName: '' }
+  const parts = trimmed.split(/\s+/)
+  if (parts.length === 1) return { firstName: parts[0], lastName: '' }
+  return { firstName: parts[0], lastName: parts.slice(1).join(' ') }
+}
+
+export function mapBackendUser(user: BackendUser): AuthUser {
+  const { firstName, lastName } = splitFullName(user.full_name)
   return {
-    id: u.id,
-    email: u.email,
+    id: user.id,
+    email: user.email,
     firstName,
     lastName,
-    role: u.role,
-    organization: u.organisation,
-    isActive: u.is_active,
-    createdAt: u.created_at,
-    lastLogin: u.last_login,
+    full_name: user.full_name,
+    role: user.role,
+    organization: user.organisation ?? '',
+    organisation: user.organisation,
+    is_active: user.is_active,
+  }
+}
+
+function mapBackendAuth(payload: BackendAuthResponse): AuthResponse {
+  return {
+    user: mapBackendUser(payload.user),
+    token: payload.access_token,
   }
 }
 
 export const authService = {
   async signIn(payload: SignInPayload): Promise<AuthResponse> {
-    const { data } = await http.post<ApiAuthResponse>('/api/auth/login', {
+    const { data } = await http.post<BackendAuthResponse>('/api/auth/login', {
       email: payload.email,
       password: payload.password,
     })
-    return { user: mapApiUser(data.user), token: data.access_token }
+    return mapBackendAuth(data)
   },
 
   async signUp(payload: SignUpPayload): Promise<AuthResponse> {
-    const { data } = await http.post<ApiAuthResponse>('/api/auth/register', {
+    const { data } = await http.post<BackendAuthResponse>('/api/auth/register', {
       email: payload.email,
       password: payload.password,
       full_name: `${payload.firstName} ${payload.lastName}`.trim(),
       organisation: payload.organizationName,
     })
-    return { user: mapApiUser(data.user), token: data.access_token }
+    return mapBackendAuth(data)
   },
 
   async getCurrentUser(): Promise<AuthUser> {
-    const { data } = await http.get<ApiUserData>('/api/auth/me')
-    return mapApiUser(data)
+    const { data } = await http.get<BackendUser>('/api/auth/me')
+    return mapBackendUser(data)
   },
 
   async generateApiKey(): Promise<ApiKeyResponse> {

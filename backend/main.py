@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 from database import init_db, get_db, User, UserRole, SessionLocal
 from auth_utils import hash_password, generate_api_key
-from routes import auth, scan, voice, dashboard, users, evaluation
+from routes import auth, scan, voice, dashboard, users, evaluation, org, onboarding
 
 # Load environment variables
 load_dotenv()
@@ -137,6 +137,8 @@ app.include_router(voice.router)
 app.include_router(dashboard.router)
 app.include_router(users.router)
 app.include_router(evaluation.router)
+app.include_router(org.router)
+app.include_router(onboarding.router)
 
 
 # Health check endpoint

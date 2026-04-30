@@ -6,7 +6,8 @@ export const AUTH_ROUTES = {
 
 export const PASSWORD_MIN_LENGTH = 8
 
+// Real default admin created on backend startup (see backend/main.py lifespan).
 export const MOCK_CREDENTIALS = {
-  email: 'demo@sentinel.ai',
-  password: 'password',
+  email: 'admin@sentinelai.io',
+  password: 'SentinelAdmin2026!',
 } as const

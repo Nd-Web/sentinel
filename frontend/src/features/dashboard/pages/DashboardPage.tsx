@@ -1,300 +1,310 @@
+import { useQuery } from '@tanstack/react-query'
 import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-} from "recharts";
-import {
-  ShieldAlert,
-  ScanFace,
-  Activity,
-  Zap,
-  TrendingUp,
-  Radio,
-} from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { useDashboardStats } from "@/features/dashboard/hooks/useDashboardStats";
-import { useThreatFeed } from "@/features/dashboard/hooks/useThreatFeed";
-import { useTrends } from "@/features/dashboard/hooks/useTrends";
-import type { ThreatLevel } from "@/types";
+  Shield, AlertTriangle, ScanFace, Activity, Ban, Radio,
+  Loader2, AlertCircle, CheckCircle2, Info, PenLine, Brain,
+} from 'lucide-react'
+import { dashboardService, type HealthCheck } from '@/services/dashboard.service'
+import { scanService } from '@/services/scan.service'
+import { RiskBadge, ScoreBar } from '@/components/RiskBadge'
+import { formatNumber, formatRelativeTime } from '@/lib/format'
+import { getApiErrorMessage } from '@/lib/errors'
+import { useAuthStore } from '@/store/auth.store'
 
-const breakdownOrder: ThreatLevel[] = ["HIGH", "MEDIUM", "LOW", "CLEAN"];
-const breakdownColors: Record<ThreatLevel, string> = {
-  HIGH: "bg-red-500",
-  MEDIUM: "bg-orange-500",
-  LOW: "bg-yellow-500",
-  CLEAN: "bg-emerald-500",
-};
-
-function StatCard({
-  label,
-  value,
-  sub,
-  icon: Icon,
-  iconClass,
-}: {
-  label: string;
-  value: string | number;
-  sub?: string;
-  icon: React.ElementType;
-  iconClass?: string;
-}) {
-  return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-      <div className="flex items-start justify-between mb-3">
-        <p className="text-xs text-slate-500 font-medium">{label}</p>
-        <div className={`p-1.5 rounded-lg bg-slate-800 ${iconClass ?? ""}`}>
-          <Icon className="size-3.5 text-current" />
-        </div>
-      </div>
-      <p className="text-2xl font-bold text-white">
-        {typeof value === "number" ? value.toLocaleString() : value}
-      </p>
-      {sub && <p className="text-xs text-slate-500 mt-1">{sub}</p>}
-    </div>
-  );
+interface KpiCardProps {
+  label: string
+  value: string | number
+  icon: React.ComponentType<{ className?: string }>
+  accent: string
 }
 
-function ChartTooltip({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean;
-  payload?: { name: string; value: number; color: string }[];
-  label?: string;
-}) {
-  if (!active || !payload?.length) return null;
+function KpiCard({ label, value, icon: Icon, accent }: KpiCardProps) {
   return (
-    <div className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5 shadow-xl text-xs">
-      <p className="text-slate-400 mb-1.5">{label}</p>
-      {payload.map((p) => (
-        <p key={p.name} style={{ color: p.color }} className="font-medium">
-          {p.name}: {p.value.toLocaleString()}
-        </p>
-      ))}
+    <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs text-slate-500 font-medium uppercase tracking-wider">{label}</span>
+        <div className={`p-1.5 rounded-md ${accent}`}>
+          <Icon className="size-4" />
+        </div>
+      </div>
+      <div className="text-2xl font-bold text-white">{value}</div>
     </div>
-  );
+  )
+}
+
+function MessageTypePill({ type }: { type: string }) {
+  return (
+    <span className="text-[10px] font-semibold bg-slate-800 px-1.5 py-0.5 rounded text-slate-400 uppercase">
+      {type}
+    </span>
+  )
+}
+
+const HEALTH_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  ok: CheckCircle2,
+  healthy: CheckCircle2,
+  warning: AlertTriangle,
+  critical: AlertCircle,
+  info: Info,
+}
+
+const HEALTH_COLORS: Record<string, string> = {
+  ok: 'text-emerald-400',
+  healthy: 'text-emerald-400',
+  warning: 'text-amber-400',
+  critical: 'text-red-400',
+  info: 'text-blue-400',
+}
+
+const HEALTH_BG: Record<string, string> = {
+  ok: 'bg-emerald-500/10 border-emerald-500/20',
+  healthy: 'bg-emerald-500/10 border-emerald-500/20',
+  warning: 'bg-amber-500/10 border-amber-500/20',
+  critical: 'bg-red-500/10 border-red-500/20',
+  info: 'bg-blue-500/10 border-blue-500/20',
+}
+
+function HealthWidget() {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['dashboard', 'health'],
+    queryFn: dashboardService.getHealth,
+    refetchInterval: 60_000,
+  })
+
+  if (isLoading) return (
+    <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 flex items-center justify-center py-10">
+      <Loader2 className="size-4 animate-spin text-slate-500" />
+    </div>
+  )
+
+  if (error) return null
+
+  const overall = data?.overall_status ?? 'healthy'
+  const OverallIcon = HEALTH_ICONS[overall] ?? CheckCircle2
+
+  return (
+    <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-sm font-semibold text-white">System health</h2>
+        <span className={`flex items-center gap-1.5 text-xs font-semibold ${HEALTH_COLORS[overall]}`}>
+          <OverallIcon className="size-3.5" />
+          {overall.toUpperCase()}
+        </span>
+      </div>
+      <div className="space-y-2">
+        {data?.checks.map((check: HealthCheck) => {
+          const Icon = HEALTH_ICONS[check.severity] ?? Info
+          return (
+            <div
+              key={check.name}
+              className={`flex items-start gap-3 px-3 py-2.5 rounded-lg border ${HEALTH_BG[check.severity]}`}
+            >
+              <Icon className={`size-3.5 shrink-0 mt-0.5 ${HEALTH_COLORS[check.severity]}`} />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-slate-300">{check.message}</p>
+              </div>
+              <span className={`text-xs font-mono shrink-0 ${HEALTH_COLORS[check.severity]}`}>
+                {String(check.value)}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function OrgMemoryWidget() {
+  const { user } = useAuthStore()
+  const isAdmin = user?.role === 'admin'
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['org', 'memory'],
+    queryFn: dashboardService.getOrgMemory,
+    enabled: isAdmin,
+  })
+
+  if (!isAdmin) return null
+
+  return (
+    <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <Brain className="size-4 text-purple-400" />
+        <h2 className="text-sm font-semibold text-white">Org fraud memory</h2>
+      </div>
+      {isLoading ? (
+        <div className="flex items-center text-slate-500 text-xs gap-2">
+          <Loader2 className="size-3 animate-spin" />Loading…
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-3">
+          <div className="bg-slate-800/40 rounded-lg p-3 text-center">
+            <div className="text-xl font-bold text-white">{data?.stats?.total_patterns ?? 0}</div>
+            <div className="text-[10px] text-slate-500 uppercase tracking-wide mt-0.5">Patterns</div>
+          </div>
+          <div className="bg-slate-800/40 rounded-lg p-3 text-center">
+            <div className="text-xl font-bold text-white">{data?.stats?.patterns_added_this_week ?? 0}</div>
+            <div className="text-[10px] text-slate-500 uppercase tracking-wide mt-0.5">This week</div>
+          </div>
+          <div className="bg-slate-800/40 rounded-lg p-3 text-center">
+            <div className="text-xl font-bold text-white">{data?.stats?.top_senders?.length ?? 0}</div>
+            <div className="text-[10px] text-slate-500 uppercase tracking-wide mt-0.5">Blocked senders</div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CorrectionsWidget() {
+  const { user } = useAuthStore()
+  const isAnalyst = user?.role === 'admin' || user?.role === 'analyst'
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['scan', 'corrections', 'stats'],
+    queryFn: scanService.getCorrectionStats,
+    enabled: isAnalyst,
+  })
+
+  if (!isAnalyst) return null
+
+  return (
+    <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <PenLine className="size-4 text-amber-400" />
+        <h2 className="text-sm font-semibold text-white">AI corrections this week</h2>
+      </div>
+      {isLoading ? (
+        <div className="flex items-center text-slate-500 text-xs gap-2">
+          <Loader2 className="size-3 animate-spin" />Loading…
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-3">
+          <div className="bg-slate-800/40 rounded-lg p-3 text-center">
+            <div className="text-xl font-bold text-white">{data?.total_corrections_this_week ?? 0}</div>
+            <div className="text-[10px] text-slate-500 uppercase tracking-wide mt-0.5">Total</div>
+          </div>
+          <div className="bg-slate-800/40 rounded-lg p-3 text-center">
+            <div className="text-xl font-bold text-amber-400">{data?.false_positive_rate?.toFixed(1) ?? '0.0'}%</div>
+            <div className="text-[10px] text-slate-500 uppercase tracking-wide mt-0.5">False +ve</div>
+          </div>
+          <div className="bg-slate-800/40 rounded-lg p-3 text-center">
+            <div className="text-xl font-bold text-red-400">{data?.false_negative_rate?.toFixed(1) ?? '0.0'}%</div>
+            <div className="text-[10px] text-slate-500 uppercase tracking-wide mt-0.5">False -ve</div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 export default function DashboardPage() {
-  const { data: stats, isLoading: statsLoading } = useDashboardStats();
-  const { data: feed, isLoading: feedLoading } = useThreatFeed(10);
-  const { data: trends, isLoading: trendsLoading } = useTrends(30);
+  const stats = useQuery({
+    queryKey: ['dashboard', 'stats'],
+    queryFn: dashboardService.getStats,
+    refetchInterval: 30_000,
+  })
 
-  const chartData = trends?.trends.map((t) => ({
-    date: new Date(t.date).toLocaleDateString("en-GB", {
-      day: "numeric",
-      month: "short",
-    }),
-    Scanned: t.total_scanned,
-    Threats: t.threats_detected,
-  }));
+  const feed = useQuery({
+    queryKey: ['dashboard', 'threat-feed'],
+    queryFn: () => dashboardService.getThreatFeed(20),
+    refetchInterval: 30_000,
+  })
+
+  const isLoading = stats.isLoading || feed.isLoading
 
   return (
-    <div className="space-y-6">
-      {/* Stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {statsLoading
-          ? Array.from({ length: 6 }).map((_, i) => (
-              <div
-                key={i}
-                className="bg-slate-900 border border-slate-800 rounded-xl p-5 h-24 animate-pulse"
-              />
-            ))
-          : stats && (
-              <>
-                <StatCard
-                  label="Total scanned"
-                  value={stats.total_scanned}
-                  icon={Activity}
-                  iconClass="text-blue-400"
-                />
-                <StatCard
-                  label="Threats detected"
-                  value={stats.threats_detected}
-                  icon={ShieldAlert}
-                  iconClass="text-red-400"
-                />
-                <StatCard
-                  label="Deepfakes found"
-                  value={stats.deepfakes_found}
-                  icon={ScanFace}
-                  iconClass="text-purple-400"
-                />
-                <StatCard
-                  label="Avg risk score"
-                  value={stats.avg_risk_score.toFixed(1)}
-                  icon={TrendingUp}
-                  iconClass="text-amber-400"
-                  sub="out of 100"
-                />
-              </>
-            )}
+    <div className="max-w-7xl">
+      <div className="mb-8">
+        <h1 className="text-2xl font-bold text-white mb-1">Dashboard</h1>
+        <p className="text-slate-500 text-sm">
+          Real-time overview of fraud intelligence activity. Auto-refreshes every 30 seconds.
+        </p>
       </div>
 
-      {/* Breakdown + Trend chart */}
-      <div className="grid lg:grid-cols-3 gap-4">
-        {/* Breakdown */}
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-          <p className="text-sm font-medium text-slate-300 mb-4">
-            Threat breakdown
-          </p>
-          {statsLoading ? (
-            <div className="space-y-3">
-              {breakdownOrder.map((l) => (
-                <div
-                  key={l}
-                  className="h-8 bg-slate-800 rounded animate-pulse"
-                />
-              ))}
-            </div>
-          ) : (
-            stats && (
-              <div className="space-y-3">
-                {breakdownOrder.map((level) => {
-                  const count = stats.breakdown[level] ?? 0;
-                  const total = Object.values(stats.breakdown).reduce(
-                    (a, b) => a + b,
-                    0,
-                  );
-                  const pct = total > 0 ? Math.round((count / total) * 100) : 0;
-                  return (
-                    <div key={level}>
-                      <div className="flex justify-between mb-1">
-                        <Badge threat={level}>{level}</Badge>
-                        <span className="text-xs text-slate-400">
-                          {count.toLocaleString()}{" "}
-                          <span className="text-slate-600">({pct}%)</span>
-                        </span>
-                      </div>
-                      <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full rounded-full ${breakdownColors[level]}`}
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )
-          )}
+      {(stats.error || feed.error) && (
+        <div className="mb-6 flex items-start gap-2.5 px-3.5 py-3 rounded-lg bg-red-500/8 border border-red-500/20 text-sm text-red-400">
+          <AlertCircle className="size-4 shrink-0 mt-0.5" />
+          <span>{getApiErrorMessage(stats.error || feed.error)}</span>
         </div>
+      )}
 
-        {/* Trend chart */}
-        <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-5">
-          <p className="text-sm font-medium text-slate-300 mb-4">
-            30-day activity
-          </p>
-          {trendsLoading ? (
-            <div className="h-48 bg-slate-800 rounded animate-pulse" />
-          ) : (
-            <ResponsiveContainer width="100%" height={192}>
-              <AreaChart
-                data={chartData}
-                margin={{ top: 4, right: 4, left: -20, bottom: 0 }}
-              >
-                <defs>
-                  <linearGradient id="gScanned" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.15} />
-                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                  </linearGradient>
-                  <linearGradient id="gThreats" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#ef4444" stopOpacity={0.15} />
-                    <stop offset="95%" stopColor="#ef4444" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                <XAxis
-                  dataKey="date"
-                  tick={{ fill: "#64748b", fontSize: 10 }}
-                  tickLine={false}
-                  axisLine={false}
-                  interval="preserveStartEnd"
-                />
-                <YAxis
-                  tick={{ fill: "#64748b", fontSize: 10 }}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <Tooltip content={<ChartTooltip />} />
-                <Legend
-                  iconType="circle"
-                  iconSize={6}
-                  wrapperStyle={{ fontSize: "11px", color: "#94a3b8" }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="Scanned"
-                  stroke="#3b82f6"
-                  strokeWidth={1.5}
-                  fill="url(#gScanned)"
-                  dot={false}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="Threats"
-                  stroke="#ef4444"
-                  strokeWidth={1.5}
-                  fill="url(#gThreats)"
-                  dot={false}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          )}
-        </div>
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
+        <KpiCard label="Total Scanned" value={isLoading ? '—' : formatNumber(stats.data?.total_scanned ?? 0)} icon={Activity} accent="bg-blue-500/15 text-blue-400" />
+        <KpiCard label="Threats" value={isLoading ? '—' : formatNumber(stats.data?.threats_detected ?? 0)} icon={AlertTriangle} accent="bg-red-500/15 text-red-400" />
+        <KpiCard label="Deepfakes" value={isLoading ? '—' : formatNumber(stats.data?.deepfakes_found ?? 0)} icon={ScanFace} accent="bg-purple-500/15 text-purple-400" />
+        <KpiCard label="Avg Risk" value={isLoading ? '—' : (stats.data?.avg_risk_score ?? 0).toFixed(0)} icon={Shield} accent="bg-amber-500/15 text-amber-400" />
+        <KpiCard label="Blocked Today" value={isLoading ? '—' : formatNumber(stats.data?.blocked_today ?? 0)} icon={Ban} accent="bg-rose-500/15 text-rose-400" />
+        <KpiCard label="Active Campaigns" value={isLoading ? '—' : (stats.data?.active_campaigns ?? 0).toString()} icon={Radio} accent="bg-emerald-500/15 text-emerald-400" />
       </div>
 
-      {/* Live threat feed */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <div className="flex items-center gap-2.5 px-5 py-4 border-b border-slate-800">
-          <span className="size-2 rounded-full bg-emerald-400 animate-pulse" />
-          <p className="text-sm font-medium text-slate-300">Live threat feed</p>
-          <span className="text-xs text-slate-600 ml-auto">
-            Refreshes every 30s
-          </span>
-        </div>
-
-        {feedLoading && (
-          <div className="py-10 text-center">
-            <span className="inline-block size-5 rounded-full border-2 border-slate-700 border-t-blue-400 animate-spin" />
-          </div>
-        )}
-        {!feedLoading && feed?.items.length === 0 && (
-          <p className="px-5 py-10 text-center text-slate-500 text-sm">
-            No recent threats.
-          </p>
-        )}
-
-        <div className="divide-y divide-slate-800/60">
-          {feed?.items.map((item) => (
-            <div key={item.id} className="flex items-center gap-4 px-5 py-3.5">
-              <Badge threat={item.threat_level}>{item.threat_level}</Badge>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-slate-300 truncate">
-                  {item.content_preview}
-                </p>
-                <p className="text-[11px] text-slate-600 mt-0.5">
-                  {item.sender} · {item.message_type?.toUpperCase()}
-                </p>
-              </div>
-              <div className="shrink-0 text-right">
-                <p className="text-sm font-mono font-semibold text-white">
-                  {item.risk_score.toFixed(0)}
-                </p>
-                <p className="text-[11px] text-slate-600">
-                  {new Date(item.created_at).toLocaleTimeString()}
-                </p>
-              </div>
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6">
+        <h2 className="text-sm font-semibold text-white mb-4">Threat-level breakdown</h2>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {(['HIGH', 'MEDIUM', 'LOW', 'CLEAN'] as const).map((level) => (
+            <div key={level} className="flex items-center justify-between bg-slate-800/40 rounded-lg px-3 py-2.5">
+              <RiskBadge level={level} />
+              <span className="text-lg font-bold text-white">
+                {isLoading ? '—' : stats.data?.breakdown?.[level] ?? 0}
+              </span>
             </div>
           ))}
         </div>
       </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+        <HealthWidget />
+        <OrgMemoryWidget />
+        <CorrectionsWidget />
+      </div>
+
+      <div className="bg-slate-900 border border-slate-800 rounded-xl">
+        <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-semibold text-white">Live threat feed</h2>
+            <p className="text-xs text-slate-500 mt-0.5">Latest 20 scans across all channels</p>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            Live
+          </div>
+        </div>
+
+        {feed.isLoading ? (
+          <div className="flex items-center justify-center py-16 text-slate-500">
+            <Loader2 className="size-4 animate-spin mr-2" />
+            Loading threats…
+          </div>
+        ) : (feed.data?.length ?? 0) === 0 ? (
+          <div className="text-center py-16 text-slate-500 text-sm">
+            No scans yet. Run your first scan from the Threats page.
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-800">
+            {feed.data?.map((item) => (
+              <div key={item.id} className="px-5 py-3 hover:bg-slate-800/30 transition-colors">
+                <div className="flex items-start gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <RiskBadge level={item.threat_level} />
+                      <MessageTypePill type={item.message_type} />
+                      {item.sender && (
+                        <span className="text-xs text-slate-500 font-mono truncate">{item.sender}</span>
+                      )}
+                      <span className="text-xs text-slate-600 ml-auto">
+                        {formatRelativeTime(item.created_at)}
+                      </span>
+                    </div>
+                    <p className="text-sm text-slate-300 truncate">{item.content_preview}</p>
+                  </div>
+                  <div className="shrink-0">
+                    <ScoreBar score={item.risk_score} />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
-  );
+  )
 }

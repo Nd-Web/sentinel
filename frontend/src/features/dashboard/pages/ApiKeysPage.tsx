@@ -1,115 +1,170 @@
 import { useState } from 'react'
-import { Key, Copy, Check, AlertTriangle, RefreshCw } from 'lucide-react'
+import { useMutation } from '@tanstack/react-query'
+import { Loader2, AlertCircle, Key, Copy, RefreshCw, Eye, EyeOff, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Dialog } from '@/components/ui/dialog'
-import { useGenerateApiKey } from '@/features/auth/hooks/useGenerateApiKey'
+import { usersService } from '@/services/users.service'
 import { getApiErrorMessage } from '@/lib/errors'
 
 export default function ApiKeysPage() {
-  const { mutate, isPending, error } = useGenerateApiKey()
-  const [generatedKey, setGeneratedKey] = useState<string | null>(null)
+  const [revealedKey, setRevealedKey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [showKey, setShowKey] = useState(true)
+  const [confirmRotate, setConfirmRotate] = useState(false)
 
-  function handleGenerate() {
-    mutate(undefined, {
-      onSuccess: (data) => setGeneratedKey(data.api_key),
-    })
-  }
+  const generate = useMutation({
+    mutationFn: () => usersService.regenerateApiKey(),
+    onSuccess: (data) => {
+      setRevealedKey(data.api_key)
+      setShowKey(true)
+      setConfirmRotate(false)
+    },
+  })
 
-  function handleCopy() {
-    if (!generatedKey) return
-    navigator.clipboard.writeText(generatedKey).then(() => {
+  function copyKey() {
+    if (!revealedKey) return
+    navigator.clipboard.writeText(revealedKey).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     })
   }
 
+  const masked = revealedKey
+    ? showKey
+      ? revealedKey
+      : revealedKey.slice(0, 12) + '•'.repeat(20) + revealedKey.slice(-4)
+    : null
+
   return (
-    <div className="max-w-lg">
-      <div className="flex items-center gap-3 mb-7">
-        <div className="p-2 rounded-lg bg-slate-800 border border-slate-700">
-          <Key className="size-4 text-slate-400" />
-        </div>
-        <div>
-          <h1 className="text-xl font-bold text-white">API Keys</h1>
-          <p className="text-slate-500 text-xs mt-0.5">Manage keys for external integrations.</p>
-        </div>
+    <div className="max-w-3xl">
+      <div className="mb-8">
+        <h1 className="text-2xl font-bold text-white mb-1">API Keys</h1>
+        <p className="text-slate-500 text-sm">
+          Generate keys for external integrations. Use the <code className="text-blue-400">X-API-Key</code> header
+          on calls to <code className="text-blue-400">/api/scan/api</code>.
+        </p>
       </div>
 
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-5">
-        <div className="p-4 rounded-lg bg-amber-500/6 border border-amber-500/20">
-          <div className="flex items-start gap-2.5">
-            <AlertTriangle className="size-4 text-amber-400 shrink-0 mt-0.5" />
-            <div className="text-xs text-amber-400/90 leading-relaxed">
-              Generating a new key immediately invalidates your existing key. All integrations using the old key will stop working.
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 mb-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Key className="size-4 text-amber-400" />
+          <h2 className="text-sm font-semibold text-white">Your API key</h2>
+        </div>
+
+        {!revealedKey ? (
+          <div className="bg-slate-950 border border-slate-800 rounded-lg p-5 text-center">
+            <p className="text-sm text-slate-400 mb-4">
+              Click below to generate (or rotate) your API key. The key is shown <strong className="text-white">once only</strong> — copy it immediately.
+            </p>
+            {!confirmRotate ? (
+              <Button
+                onClick={() => setConfirmRotate(true)}
+                className="bg-amber-600 hover:bg-amber-500 text-white border-0 h-10 px-4 text-sm font-medium"
+              >
+                <RefreshCw className="size-3.5 mr-1.5" />
+                Generate / rotate API key
+              </Button>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-start gap-2 text-sm text-amber-400 text-left bg-amber-500/8 border border-amber-500/20 rounded-lg p-3">
+                  <AlertTriangle className="size-4 shrink-0 mt-0.5" />
+                  <span>
+                    Generating a new key will invalidate any existing key currently in use. All clients
+                    using the old key will start receiving 401 errors.
+                  </span>
+                </div>
+                <div className="flex justify-center gap-2">
+                  <Button
+                    onClick={() => setConfirmRotate(false)}
+                    className="bg-slate-800 hover:bg-slate-700 text-white border-0 h-9 px-3 text-sm"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    onClick={() => generate.mutate()}
+                    disabled={generate.isPending}
+                    className="bg-amber-600 hover:bg-amber-500 text-white border-0 h-9 px-3 text-sm disabled:opacity-50"
+                  >
+                    {generate.isPending ? (
+                      <span className="flex items-center gap-2">
+                        <Loader2 className="size-4 animate-spin" />
+                        Generating…
+                      </span>
+                    ) : (
+                      'Yes, rotate it'
+                    )}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <>
+            <div className="bg-slate-950 border border-slate-800 rounded-lg p-4">
+              <div className="flex items-center gap-2">
+                <code className="flex-1 text-sm text-emerald-400 font-mono break-all">{masked}</code>
+                <button
+                  onClick={() => setShowKey((v) => !v)}
+                  className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                  aria-label={showKey ? 'Hide key' : 'Show key'}
+                >
+                  {showKey ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+                </button>
+                <button
+                  onClick={copyKey}
+                  className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                  aria-label="Copy"
+                >
+                  <Copy className="size-3.5" />
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
-
-        <div>
-          <p className="text-sm text-slate-400 mb-1.5">Your API key</p>
-          <div className="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-lg px-3 h-10">
-            <Key className="size-3.5 text-slate-600 shrink-0" />
-            <span className="text-sm text-slate-500 font-mono tracking-widest flex-1">sk-sentinel-••••••••••••••••••••••••••••••••</span>
-          </div>
-          <p className="text-[11px] text-slate-600 mt-1.5">The full key is only visible once when generated.</p>
-        </div>
-
-        {error && (
-          <p className="text-sm text-red-400">{getApiErrorMessage(error)}</p>
+            {copied && (
+              <p className="text-xs text-emerald-400 mt-2">Copied to clipboard.</p>
+            )}
+            <div className="mt-4 flex items-start gap-2 text-sm text-amber-400 bg-amber-500/8 border border-amber-500/20 rounded-lg p-3">
+              <AlertTriangle className="size-4 shrink-0 mt-0.5" />
+              <span>
+                Save this key now — once you leave this page, you'll have to rotate it to see it again.
+              </span>
+            </div>
+            <Button
+              onClick={() => {
+                setRevealedKey(null)
+                setConfirmRotate(false)
+              }}
+              className="mt-4 bg-slate-800 hover:bg-slate-700 text-white border-0 h-9 px-3 text-sm"
+            >
+              I've saved it
+            </Button>
+          </>
         )}
 
-        <Button
-          onClick={handleGenerate}
-          disabled={isPending}
-          className="bg-blue-600 hover:bg-blue-500 text-white border-0 h-10 px-5 text-sm font-medium disabled:opacity-60"
-        >
-          {isPending ? (
-            <span className="flex items-center gap-2">
-              <span className="size-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-              Generating…
-            </span>
-          ) : (
-            <span className="flex items-center gap-2">
-              <RefreshCw className="size-3.5" />
-              Generate new key
-            </span>
-          )}
-        </Button>
+        {generate.error && (
+          <div className="mt-4 flex items-start gap-2.5 px-3.5 py-3 rounded-lg bg-red-500/8 border border-red-500/20 text-sm text-red-400">
+            <AlertCircle className="size-4 shrink-0 mt-0.5" />
+            <span>{getApiErrorMessage(generate.error)}</span>
+          </div>
+        )}
       </div>
 
-      <Dialog
-        open={!!generatedKey}
-        onClose={() => setGeneratedKey(null)}
-        title="Your new API key"
-      >
-        <div className="space-y-4">
-          <div className="p-3 rounded-lg bg-amber-500/6 border border-amber-500/20 flex items-start gap-2">
-            <AlertTriangle className="size-4 text-amber-400 shrink-0 mt-0.5" />
-            <p className="text-xs text-amber-400/90 leading-relaxed">
-              Copy this key now. It will <strong>not</strong> be shown again.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5">
-            <code className="text-xs text-emerald-400 font-mono flex-1 break-all">{generatedKey}</code>
-            <button
-              onClick={handleCopy}
-              className="shrink-0 text-slate-500 hover:text-slate-300 transition-colors p-1"
-              aria-label="Copy key"
-            >
-              {copied ? <Check className="size-3.5 text-emerald-400" /> : <Copy className="size-3.5" />}
-            </button>
-          </div>
-
-          <Button
-            onClick={() => setGeneratedKey(null)}
-            className="w-full bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 h-9 text-sm"
-          >
-            Done
-          </Button>
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+        <h2 className="text-sm font-semibold text-white mb-3">Integration example</h2>
+        <p className="text-xs text-slate-500 mb-3">
+          Send a message to SentinelAI for live fraud scoring. Returns risk_score, threat_level, action, flags.
+        </p>
+        <div className="bg-slate-950 border border-slate-800 rounded-lg p-4 overflow-x-auto">
+          <pre className="text-xs text-slate-300 font-mono leading-relaxed">
+{`curl -X POST $SENTINEL_BACKEND/api/scan/api \\
+  -H "X-API-Key: <your-api-key>" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "content": "URGENT: Verify your BVN at gtb-verify.com",
+    "message_type": "sms",
+    "sender": "+2348030001234"
+  }'`}
+          </pre>
         </div>
-      </Dialog>
+      </div>
     </div>
   )
 }

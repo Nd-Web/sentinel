@@ -1,234 +1,225 @@
 import { useRef, useState } from 'react'
-import { Mic, Upload, AlertCircle, Clock, ChevronRight } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
-import { Dialog } from '@/components/ui/dialog'
-import { useAnalyseVoice } from '@/features/deepfake/hooks/useAnalyseVoice'
-import { useVoiceHistory } from '@/features/deepfake/hooks/useVoiceHistory'
-import { useVoiceAnalysis } from '@/features/deepfake/hooks/useVoiceAnalysis'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Loader2, AlertCircle, Upload, Mic } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { RiskBadge, ScoreBar } from '@/components/RiskBadge'
+import { voiceService, type VoiceAnalysis } from '@/services/voice.service'
 import { getApiErrorMessage } from '@/lib/errors'
-import type { VoiceAnalysis } from '@/features/deepfake/types'
+import { formatRelativeTime } from '@/lib/format'
 
-const MAX_MB = 25
-const ACCEPT = '.mp3,.wav,.webm,audio/mpeg,audio/wav,audio/webm'
-
-function DeepfakeBar({ probability }: { probability: number }) {
-  const color = probability >= 70 ? 'bg-red-500' : probability >= 40 ? 'bg-amber-500' : 'bg-emerald-500'
+function VoiceResultCard({ result }: { result: VoiceAnalysis }) {
   return (
-    <div className="space-y-1">
-      <div className="flex justify-between text-xs text-slate-500">
-        <span>Deepfake probability</span>
-        <span className="font-mono font-semibold text-white">{probability.toFixed(1)}%</span>
+    <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div>
+          <p className="text-[11px] text-slate-500 uppercase tracking-wider font-semibold mb-1.5">
+            Deepfake probability
+          </p>
+          <div className="flex items-center gap-3">
+            <span className="text-3xl font-bold text-white tabular-nums">
+              {result.deepfake_probability.toFixed(0)}%
+            </span>
+            <span
+              className={`text-xs font-semibold px-2 py-0.5 rounded-md border ${
+                result.deepfake_probability >= 70
+                  ? 'bg-red-500/15 text-red-400 border-red-500/30'
+                  : result.deepfake_probability >= 40
+                    ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                    : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+              }`}
+            >
+              {result.deepfake_probability >= 70
+                ? 'LIKELY DEEPFAKE'
+                : result.deepfake_probability >= 40
+                  ? 'SUSPICIOUS'
+                  : 'AUTHENTIC'}
+            </span>
+          </div>
+        </div>
+        <div>
+          <p className="text-[11px] text-slate-500 uppercase tracking-wider font-semibold mb-1.5">
+            Risk score
+          </p>
+          <div className="flex items-center gap-3">
+            <RiskBadge level={result.threat_level} />
+            <ScoreBar score={result.risk_score} />
+          </div>
+        </div>
       </div>
-      <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
-        <div className={`h-full rounded-full transition-all duration-500 ${color}`} style={{ width: `${probability}%` }} />
-      </div>
+
+      {result.flags.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          {result.flags.map((flag) => (
+            <span
+              key={flag}
+              className="text-[11px] px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20"
+            >
+              {flag}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <p className="text-sm text-slate-300 leading-relaxed mb-3">{result.reasoning}</p>
+
+      <details className="group">
+        <summary className="text-xs text-slate-500 cursor-pointer hover:text-slate-300 select-none">
+          Show transcript
+        </summary>
+        <div className="mt-2 text-sm text-slate-400 italic bg-slate-950 rounded-md p-3 border border-slate-800 leading-relaxed">
+          "{result.transcript}"
+        </div>
+      </details>
     </div>
   )
 }
 
-function AnalysisCard({ analysis, onClose }: { analysis: VoiceAnalysis; onClose: () => void }) {
-  return (
-    <Dialog open onClose={onClose} title="Voice analysis detail" className="max-w-lg">
-      <div className="space-y-4">
-        <div className="flex items-center gap-3">
-          <Badge threat={analysis.threat_level}>{analysis.threat_level}</Badge>
-          <span className={`text-xs font-semibold ${analysis.is_scam ? 'text-red-400' : 'text-emerald-400'}`}>
-            {analysis.is_scam ? 'Scam detected' : 'No scam detected'}
-          </span>
-        </div>
-
-        <DeepfakeBar probability={analysis.deepfake_probability} />
-
-        <div>
-          <p className="text-[11px] text-slate-500 mb-1.5 font-medium uppercase tracking-wide">Transcript</p>
-          <p className="text-sm text-slate-300 leading-relaxed bg-slate-800/60 rounded-lg p-3 max-h-32 overflow-y-auto">{analysis.transcript}</p>
-        </div>
-
-        <div>
-          <p className="text-[11px] text-slate-500 mb-1.5 font-medium uppercase tracking-wide">Reasoning</p>
-          <p className="text-sm text-slate-300 leading-relaxed bg-slate-800/60 rounded-lg p-3">{analysis.reasoning}</p>
-        </div>
-
-        {analysis.flags.length > 0 && (
-          <div>
-            <p className="text-[11px] text-slate-500 mb-1.5 font-medium uppercase tracking-wide">Flags</p>
-            <div className="flex flex-wrap gap-1.5">
-              {analysis.flags.map((f) => (
-                <span key={f} className="px-2 py-0.5 bg-slate-800 border border-slate-700 rounded text-xs text-slate-400 font-mono">{f}</span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <p className="text-[11px] text-slate-600">{new Date(analysis.created_at).toLocaleString()}</p>
-      </div>
-    </Dialog>
-  )
-}
-
-function HistoryDetail({ id, onClose }: { id: string; onClose: () => void }) {
-  const { data, isLoading } = useVoiceAnalysis(id)
-  if (isLoading || !data) return <Dialog open onClose={onClose}><span className="inline-block size-5 rounded-full border-2 border-slate-700 border-t-blue-400 animate-spin" /></Dialog>
-  return <AnalysisCard analysis={data} onClose={onClose} />
-}
-
 export default function DeepfakePage() {
-  const fileRef = useRef<HTMLInputElement>(null)
-  const [dragging, setDragging] = useState(false)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [result, setResult] = useState<VoiceAnalysis | null>(null)
+  const qc = useQueryClient()
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [latestResult, setLatestResult] = useState<VoiceAnalysis | null>(null)
 
-  const { mutate: analyse, isPending, error } = useAnalyseVoice()
-  const { data: history, isLoading: historyLoading } = useVoiceHistory()
+  const history = useQuery({
+    queryKey: ['voice', 'history'],
+    queryFn: () => voiceService.getHistory(1, 30),
+  })
 
-  function handleFile(file: File) {
-    if (file.size > MAX_MB * 1024 * 1024) return
-    analyse(file, { onSuccess: setResult })
-  }
-
-  function onDrop(e: React.DragEvent) {
-    e.preventDefault()
-    setDragging(false)
-    const file = e.dataTransfer.files[0]
-    if (file) handleFile(file)
-  }
+  const analyse = useMutation({
+    mutationFn: () => {
+      if (!selectedFile) throw new Error('Please select an audio file first')
+      return voiceService.analyse(selectedFile)
+    },
+    onSuccess: (data) => {
+      setLatestResult(data)
+      setSelectedFile(null)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      qc.invalidateQueries({ queryKey: ['voice', 'history'] })
+      qc.invalidateQueries({ queryKey: ['dashboard'] })
+    },
+  })
 
   return (
-    <div className="space-y-7">
-      <div className="flex items-center gap-3">
-        <div className="p-2 rounded-lg bg-slate-800 border border-slate-700">
-          <Mic className="size-4 text-slate-400" />
-        </div>
-        <div>
-          <h1 className="text-xl font-bold text-white">Deepfake Detection</h1>
-          <p className="text-slate-500 text-xs mt-0.5">Upload audio for AI-powered analysis. Supports MP3, WAV, WebM up to 25 MB.</p>
-        </div>
+    <div className="max-w-6xl">
+      <div className="mb-8">
+        <h1 className="text-2xl font-bold text-white mb-1">Deepfake Detection</h1>
+        <p className="text-slate-500 text-sm">
+          Upload a call recording. Whisper transcribes it, then GPT analyses for AI-generated voice
+          and social-engineering patterns.
+        </p>
       </div>
 
-      {/* Upload zone */}
-      <div
-        className={`relative border-2 border-dashed rounded-xl p-10 text-center transition-colors cursor-pointer ${
-          dragging ? 'border-blue-500/60 bg-blue-500/5' : 'border-slate-700 hover:border-slate-600 bg-slate-900/40'
-        }`}
-        onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={onDrop}
-        onClick={() => fileRef.current?.click()}
-      >
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-8">
+        <div className="flex items-center gap-2 mb-4">
+          <Mic className="size-4 text-purple-400" />
+          <h2 className="text-sm font-semibold text-white">Analyse audio file</h2>
+        </div>
+
         <input
-          ref={fileRef}
+          ref={fileInputRef}
           type="file"
-          accept={ACCEPT}
+          accept="audio/webm,audio/wav,audio/mp3,audio/mpeg,.webm,.wav,.mp3"
+          onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
           className="hidden"
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = '' }}
         />
-        {isPending ? (
-          <div className="flex flex-col items-center gap-3">
-            <span className="size-8 rounded-full border-2 border-slate-700 border-t-blue-400 animate-spin" />
-            <p className="text-sm text-slate-400">Analysing audio…</p>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center gap-3">
-            <div className="p-3 rounded-full bg-slate-800 border border-slate-700">
-              <Upload className="size-5 text-slate-400" />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-slate-300">Drop audio file here or click to browse</p>
-              <p className="text-xs text-slate-500 mt-1">MP3, WAV, WebM · Max {MAX_MB} MB</p>
-            </div>
-          </div>
-        )}
-      </div>
 
-      {error && (
-        <div className="flex items-start gap-2.5 px-4 py-3 rounded-lg bg-red-500/8 border border-red-500/20 text-sm text-red-400">
-          <AlertCircle className="size-4 shrink-0 mt-0.5" />
-          {getApiErrorMessage(error)}
-        </div>
-      )}
-
-      {/* Inline result */}
-      {result && (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Badge threat={result.threat_level}>{result.threat_level}</Badge>
-              <span className={`text-sm font-semibold ${result.is_scam ? 'text-red-400' : 'text-emerald-400'}`}>
-                {result.is_scam ? 'Scam detected' : 'Legitimate'}
-              </span>
-            </div>
-            <button onClick={() => setResult(null)} className="text-xs text-slate-600 hover:text-slate-400 transition-colors">Dismiss</button>
-          </div>
-
-          <DeepfakeBar probability={result.deepfake_probability} />
-
-          <div className="grid grid-cols-2 gap-3">
-            <div className="bg-slate-800/60 rounded-lg p-3">
-              <p className="text-[11px] text-slate-500 mb-1">Risk score</p>
-              <p className="text-lg font-bold text-white">{result.risk_score.toFixed(1)}<span className="text-xs text-slate-500">/100</span></p>
-            </div>
-            <div className="bg-slate-800/60 rounded-lg p-3">
-              <p className="text-[11px] text-slate-500 mb-1">Action</p>
-              <p className={`text-lg font-bold ${result.threat_level === 'HIGH' ? 'text-red-400' : result.threat_level === 'MEDIUM' ? 'text-amber-400' : 'text-emerald-400'}`}>
-                {result.threat_level === 'HIGH' ? 'BLOCK' : result.threat_level === 'MEDIUM' ? 'REVIEW' : 'ALLOW'}
+        <div
+          onClick={() => fileInputRef.current?.click()}
+          className="border-2 border-dashed border-slate-700 hover:border-blue-500/50 rounded-xl p-8 text-center cursor-pointer transition-colors"
+        >
+          <Upload className="size-8 text-slate-500 mx-auto mb-3" />
+          {selectedFile ? (
+            <>
+              <p className="text-sm text-white font-medium mb-1">{selectedFile.name}</p>
+              <p className="text-xs text-slate-500">
+                {(selectedFile.size / 1024 / 1024).toFixed(2)} MB · click to change
               </p>
-            </div>
-          </div>
-
-          <div>
-            <p className="text-[11px] text-slate-500 mb-1.5 font-medium uppercase tracking-wide">Transcript</p>
-            <p className="text-sm text-slate-300 leading-relaxed bg-slate-800/40 rounded-lg p-3 max-h-24 overflow-y-auto">{result.transcript}</p>
-          </div>
-
-          <p className="text-sm text-slate-400 leading-relaxed">{result.reasoning}</p>
-
-          {result.flags.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {result.flags.map((f) => (
-                <span key={f} className="px-2 py-0.5 bg-slate-800 border border-slate-700 rounded text-xs text-slate-400 font-mono">{f}</span>
-              ))}
-            </div>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-slate-300 font-medium mb-1">Click to select audio</p>
+              <p className="text-xs text-slate-500">webm, wav, mp3 — max 25MB</p>
+            </>
           )}
         </div>
-      )}
 
-      {/* History */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <div className="flex items-center gap-2 px-5 py-4 border-b border-slate-800">
-          <Clock className="size-4 text-slate-500" />
-          <p className="text-sm font-medium text-slate-300">Analysis history</p>
-          {history && <span className="text-xs text-slate-600">({history.total})</span>}
-        </div>
-
-        {historyLoading && (
-          <div className="py-10 text-center"><span className="inline-block size-5 rounded-full border-2 border-slate-700 border-t-blue-400 animate-spin" /></div>
-        )}
-        {!historyLoading && history?.items.length === 0 && (
-          <p className="px-5 py-10 text-center text-slate-500 text-sm">No analyses yet.</p>
+        {analyse.error && (
+          <div className="mt-4 flex items-start gap-2.5 px-3.5 py-3 rounded-lg bg-red-500/8 border border-red-500/20 text-sm text-red-400">
+            <AlertCircle className="size-4 shrink-0 mt-0.5" />
+            <span>{getApiErrorMessage(analyse.error)}</span>
+          </div>
         )}
 
-        <div className="divide-y divide-slate-800/60">
-          {history?.items.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setSelectedId(item.id)}
-              className="w-full flex items-center gap-4 px-5 py-3.5 hover:bg-slate-800/20 transition-colors text-left"
-            >
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-slate-300 truncate">{item.transcript_preview}</p>
-                <p className="text-[11px] text-slate-600 mt-0.5">{new Date(item.created_at).toLocaleString()}</p>
-              </div>
-              <div className="flex items-center gap-3 shrink-0">
-                <span className="text-xs font-mono text-slate-500">{item.deepfake_probability.toFixed(0)}%</span>
-                <Badge threat={item.threat_level}>{item.threat_level}</Badge>
-                <ChevronRight className="size-3.5 text-slate-600" />
-              </div>
-            </button>
-          ))}
-        </div>
+        <Button
+          onClick={() => analyse.mutate()}
+          disabled={!selectedFile || analyse.isPending}
+          className="mt-4 bg-purple-600 hover:bg-purple-500 text-white border-0 h-10 px-4 text-sm font-medium disabled:opacity-50"
+        >
+          {analyse.isPending ? (
+            <span className="flex items-center gap-2">
+              <Loader2 className="size-4 animate-spin" />
+              Analysing… (this can take 30-60s)
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5">
+              <Mic className="size-3.5" />
+              Analyse audio
+            </span>
+          )}
+        </Button>
+
+        {latestResult && (
+          <div className="mt-5 pt-5 border-t border-slate-800">
+            <p className="text-xs text-slate-500 uppercase tracking-wider mb-3 font-semibold">
+              Latest result
+            </p>
+            <VoiceResultCard result={latestResult} />
+          </div>
+        )}
       </div>
 
-      {selectedId && <HistoryDetail id={selectedId} onClose={() => setSelectedId(null)} />}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl">
+        <div className="px-5 py-4 border-b border-slate-800">
+          <h2 className="text-sm font-semibold text-white">Voice analysis history</h2>
+        </div>
+
+        {history.isLoading ? (
+          <div className="flex items-center justify-center py-16 text-slate-500">
+            <Loader2 className="size-4 animate-spin mr-2" />
+            Loading…
+          </div>
+        ) : (history.data?.items.length ?? 0) === 0 ? (
+          <div className="text-center py-16 text-slate-500 text-sm">
+            No voice analyses yet. Upload a recording above to get started.
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-800">
+            {history.data?.items.map((item) => (
+              <div key={item.id} className="px-5 py-3 hover:bg-slate-800/30 transition-colors">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <RiskBadge level={item.threat_level} />
+                      <span className="text-xs font-mono text-slate-500">
+                        Deepfake: {item.deepfake_probability.toFixed(0)}%
+                      </span>
+                      <span className="text-xs text-slate-600 ml-auto">
+                        {formatRelativeTime(item.created_at)}
+                      </span>
+                    </div>
+                    <p className="text-sm text-slate-400 italic line-clamp-1">
+                      "{item.transcript_preview}"
+                    </p>
+                  </div>
+                  <div className="shrink-0">
+                    <ScoreBar score={item.risk_score} />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
